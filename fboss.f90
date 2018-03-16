@@ -82,11 +82,11 @@ function distance_matrix(coords) result(dmat)
 
 end function distance_matrix
 
-function ang_cube(x) result(angmat)
+subroutine ang_cube(x, angmat)
 
     double precision, dimension(:,:), intent(in) :: x 
 
-    double precision, allocatable, dimension(:,:,:) :: angmat
+    double precision, dimension(:,:,:) :: angmat
 
     double precision :: theta
 
@@ -94,7 +94,6 @@ function ang_cube(x) result(angmat)
 
     n = size(x, dim=1)
 
-    allocate(angmat(n,n,n))
     angmat = 0.0d0
 
     do i = 1, n
@@ -108,16 +107,16 @@ function ang_cube(x) result(angmat)
 
                 ! write (*,*) i,j,k,theta
                 angmat(i,j,k) = theta
-                ! angmat(i,k,j) = theta
+                angmat(i,k,j) = theta
 
             enddo
         enddo
     enddo
 
-end function ang_cube
+end subroutine ang_cube
 
 
-subroutine initialize_two_body(coords, charges, dmat, distance, scaling, counts, max_id )
+subroutine initialize_two_body(coords, charges, dmat, distance, scaling, counts, max_id, power)
 
     implicit none
     
@@ -128,8 +127,11 @@ subroutine initialize_two_body(coords, charges, dmat, distance, scaling, counts,
     double precision, dimension(:,:), intent(out) :: distance
     double precision, dimension(:,:), intent(out) :: scaling
     integer, dimension(:), intent(out) :: counts
+    
+    integer, intent(in) :: max_id
+    double precision, intent(in) :: power
 
-    integer :: i, j, n, max_id, key
+    integer :: i, j, n, key
     integer :: qi, qj
     
     n = size(charges)
@@ -153,7 +155,7 @@ subroutine initialize_two_body(coords, charges, dmat, distance, scaling, counts,
             ! write (*,*) key, counts(key), dmat(i,j)
             
             distance(key,counts(key)) = dmat(i,j)
-            scaling(key,counts(key)) = dmat(i,j)**(-6)
+            scaling(key,counts(key)) = dmat(i,j)**(-power)
 
 
         enddo
@@ -182,14 +184,16 @@ function two_body_kernel(two_body_distance1, two_body_scaling1, two_body_counts1
     double precision :: inv_width
     double precision :: k, mu, scaling, contrib
 
+    double precision :: s11, s22, s12
+
     integer i, j, a, b
         
     cut = 4.0d0*width
     k = 0.0d0
 
-    inv_width = -1.0d0 / width**2
+    inv_width = -1.0d0 / (4.0d0 * width**2)
 
-    j = 0
+    ! j = 0
 
     do i = 1, size(two_body_counts1)
 
@@ -204,12 +208,16 @@ function two_body_kernel(two_body_distance1, two_body_scaling1, two_body_counts1
                 if (mu > cut) cycle
                 scaling = two_body_scaling1(i,a) * two_body_scaling2(i,b)
 
-                contrib = exp(mu * inv_width) * scaling
+                ! contrib = two_body_scaling1(i,a)**2 + two_body_scaling2(i,b)**2 - &
+                !                 & 2.0d0 * exp(mu * inv_width) * scaling
                 
+                contrib = exp(mu * inv_width) * scaling
+                ! s11 = lal
+
                 k = k + contrib
 
                 ! write (*,*), i, k, mu, scaling, contrib
-                j = j + 1
+                ! j = j + 1
             end do
         end do
     end do
@@ -236,7 +244,6 @@ subroutine initialize_three_body(coords, charges, dmat, angcube, distance, scali
     double precision :: factor
     
     n = size(charges)
-    max_id = maxval(charges)
 
     distance = 0.0d0
     scaling  = 0.0d0
@@ -254,8 +261,6 @@ subroutine initialize_three_body(coords, charges, dmat, angcube, distance, scali
                 qj = charges(j)
                 qk = charges(k)
                 key = three2key(qi, min(qj, qk), max(qj, qk), max_id)
-
-                
 
                 ! write (*,*) qi, min(qj, qk), max(qj, qk), key, size(counts), size(distance, dim=1), size(distance, dim=2)
 
@@ -298,108 +303,282 @@ end function three2key
 
 end module boss
 
-subroutine boss_kernel(coordinates1, nuclear_charges1, coordinates2, nuclear_charges2, k)
+
+subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
 
     use boss, only: distance_matrix, ang_cube, initialize_two_body, two_body_kernel, &
         & initialize_three_body
 
     implicit none
 
-    double precision, dimension(:,:), intent(in) :: coordinates1
-    double precision, dimension(:,:), intent(in) :: coordinates2
-
-    integer, dimension(:),   intent(in) :: nuclear_charges1 
-    integer, dimension(:),   intent(in) :: nuclear_charges2
+    double precision, dimension(:,:,:), intent(in) :: X1
+    double precision, dimension(:,:,:), intent(in) :: X2
     
-    double precision, intent(out) :: k
+    integer, intent(in) :: nm1, nm2
+
+    double precision, dimension(:,:,:), allocatable :: coordinates1
+    double precision, dimension(:,:,:), allocatable :: coordinates2
+
+    integer, dimension(:,:), allocatable :: nuclear_charges1 
+    integer, dimension(:,:), allocatable :: nuclear_charges2
+    
+    double precision, dimension(nm1,nm2), intent(out) :: k
 
     double precision, dimension(:,:), allocatable :: dmat1 
     double precision, dimension(:,:), allocatable :: dmat2
     
-    double precision, dimension(:,:,:), allocatable :: acube1 
-    double precision, dimension(:,:,:), allocatable :: acube2
+    double precision, allocatable, dimension(:,:,:) :: two_body_distance1
+    double precision, allocatable, dimension(:,:,:) :: two_body_scaling1
+    integer, allocatable, dimension(:,:) :: two_body_counts1
 
-    double precision, allocatable, dimension(:,:) :: two_body_distance1
-    double precision, allocatable, dimension(:,:) :: two_body_scaling1
-    integer, allocatable, dimension(:) :: two_body_counts1
-
-    double precision, allocatable, dimension(:,:) :: two_body_distance2
-    double precision, allocatable, dimension(:,:) :: two_body_scaling2
-    integer, allocatable, dimension(:) :: two_body_counts2
+    double precision, allocatable, dimension(:,:,:) :: two_body_distance2
+    double precision, allocatable, dimension(:,:,:) :: two_body_scaling2
+    integer, allocatable, dimension(:,:) :: two_body_counts2
     
-    double precision, allocatable, dimension(:,:) :: three_body_distance1
-    double precision, allocatable, dimension(:,:) :: three_body_scaling1
-    integer, allocatable, dimension(:) :: three_body_counts1
-
-    double precision, allocatable, dimension(:,:) :: three_body_distance2
-    double precision, allocatable, dimension(:,:) :: three_body_scaling2
-    integer, allocatable, dimension(:) :: three_body_counts2
-
     integer :: max_id
+    integer :: max_size
     integer :: max_two_body
     integer :: max_three_body
 
     double precision, parameter :: pi = 4.d0 * atan(1.d0)
-    double precision, parameter :: d_width = 0.2d0
+
+    ! double precision, parameter :: d_width = 0.1d0
+    ! double precision, parameter :: d_power = 6.0d0
+    ! double precision, parameter :: sigma = 100.0d0
+
+    double precision, intent(in) :: d_width
+    double precision, intent(in) :: d_power
+    double precision, intent(in) :: sigma
+
     double precision, parameter :: t_width = 0.2d0
+   
+    logical, parameter :: three = .false.
+    ! logical, parameter :: three = .true.
 
-    double precision :: k2, k3
+    double precision, parameter :: t_weight = 0.0d0
 
-    max_id = max(maxval(nuclear_charges1(:)), maxval(nuclear_charges2(:)))
-    max_two_body = max(size(nuclear_charges1), size(nuclear_charges2))**2
-    max_three_body = max(size(nuclear_charges1), size(nuclear_charges2))**3
 
-    allocate(two_body_distance1(max_id**2, max_two_body))
-    allocate(two_body_distance2(max_id**2, max_two_body))
-    allocate(two_body_scaling1(max_id**2, max_two_body))
-    allocate(two_body_scaling2(max_id**2, max_two_body))
-    allocate(two_body_counts1(max_id**2))
-    allocate(two_body_counts2(max_id**2))
+    double precision, dimension(nm1) :: s11
+    double precision, dimension(nm2) :: s22
+    double precision :: s12
+    double precision :: l2
+
+    integer, dimension(:), allocatable :: n1, n2
+
+    integer :: na1, na2
+
+    integer :: a, b, i
     
-    allocate(three_body_distance1(max_id**3, max_three_body))
-    allocate(three_body_distance2(max_id**3, max_three_body))
-    allocate(three_body_scaling1(max_id**3,  max_three_body))
-    allocate(three_body_scaling2(max_id**3,  max_three_body))
-    allocate(three_body_counts1(max_id**3))
-    allocate(three_body_counts2(max_id**3))
+    double precision, dimension(:,:,:), allocatable :: acube1 
+    double precision, dimension(:,:,:), allocatable :: acube2
     
-    dmat1 = distance_matrix(coordinates1)
-    dmat2 = distance_matrix(coordinates2)
+    double precision, allocatable, dimension(:,:,:) :: three_body_distance1
+    double precision, allocatable, dimension(:,:,:) :: three_body_scaling1
+    integer, allocatable, dimension(:,:) :: three_body_counts1
 
-    acube1 = ang_cube(coordinates1)
-    acube2 = ang_cube(coordinates2)
+    double precision, allocatable, dimension(:,:,:) :: three_body_distance2
+    double precision, allocatable, dimension(:,:,:) :: three_body_scaling2
+    integer, allocatable, dimension(:,:) :: three_body_counts2
+    
+    max_size = max(size(X1, dim=3),size(X2, dim=3))
+    
+    allocate(nuclear_charges1(max_size,nm1))
+    allocate(nuclear_charges2(max_size,nm2))
+   
+    allocate(n1(nm1))
+    allocate(n2(nm2))
 
-    call initialize_two_body(coordinates1, nuclear_charges1, dmat1, &
-        & two_body_distance1, two_body_scaling1, two_body_counts1, max_id)
+    n1 = 0
+    n2 = 0
+    nuclear_charges1 = -1
+    nuclear_charges2 = -1
 
-    call initialize_two_body(coordinates2, nuclear_charges2, dmat2, &
-        & two_body_distance2, two_body_scaling2, two_body_counts2, max_id)
+    max_id = 0
+    do a = 1, nm1
+        do i = 1, max_size
+            if (X1(a,1,i) > 0) then
+                nuclear_charges1(i,a) = int(X1(a,1,i))
+                n1(a) = n1(a) + 1
+                max_id = max(max_id, nuclear_charges1(i,a))
+            endif
+        enddo
+    enddo
+    
+    do a = 1, nm2
+        do i = 1, max_size
+            if (X2(a,1,i) > 0) then
+                nuclear_charges2(i,a) = int(X2(a,1,i))
+                n2(a) = n2(a) + 1
+                max_id = max(max_id, nuclear_charges2(i,a))
+            endif
+        enddo
+    enddo
+    
+    max_two_body = max(maxval(n1), maxval(n2))**2
 
-    call initialize_three_body(coordinates1, nuclear_charges1, dmat1, acube1, &
-        & three_body_distance1, three_body_scaling1, three_body_counts1, max_id)
+    allocate(two_body_distance1(max_id**2, max_two_body,nm1))
+    allocate(two_body_distance2(max_id**2, max_two_body,nm2))
+    allocate(two_body_scaling1(max_id**2, max_two_body,nm1))
+    allocate(two_body_scaling2(max_id**2, max_two_body,nm2))
+    allocate(two_body_counts1(max_id**2,nm1))
+    allocate(two_body_counts2(max_id**2,nm2))
 
-    call initialize_three_body(coordinates2, nuclear_charges2, dmat2, acube2, &
-        & three_body_distance2, three_body_scaling2, three_body_counts2, max_id)
+    two_body_distance1 = 0.0d0
+    two_body_distance2 = 0.0d0
+    two_body_scaling1 = 0.0d0
+    two_body_scaling2 = 0.0d0
+    two_body_counts1 = 0
+    two_body_counts2 = 0
+    
+   
+    if (three) then 
+        max_three_body = max(maxval(n1), maxval(n2))**3
 
-    k2 =  1.0d0 * two_body_kernel(two_body_distance1, two_body_scaling1, two_body_counts1, &
-                       & two_body_distance2, two_body_scaling2, two_body_counts2, d_width)
+        allocate(three_body_distance1(max_id**3, max_three_body,nm1))
+        allocate(three_body_distance2(max_id**3, max_three_body,nm2))
+        allocate(three_body_scaling1(max_id**3,  max_three_body,nm1))
+        allocate(three_body_scaling2(max_id**3,  max_three_body,nm2))
+        allocate(three_body_counts1(max_id**3,nm1))
+        allocate(three_body_counts2(max_id**3,nm2))
+        
+        three_body_distance1 = 0.0d0
+        three_body_distance2 = 0.0d0
+        three_body_scaling1 = 0.0d0
+        three_body_scaling2 = 0.0d0
+        three_body_counts1 = 0
+        three_body_counts2 = 0
+        allocate(acube1(maxval(n1(:)),maxval(n1(:)),maxval(n1(:))))
+        allocate(acube2(maxval(n2(:)),maxval(n2(:)),maxval(n2(:))))
 
-    k3 = 0.1d0 * two_body_kernel(three_body_distance1, three_body_scaling1, three_body_counts1, &
-          & three_body_distance2, three_body_scaling2, three_body_counts2, t_width)
+        acube1 = 0.0d0
+        acube2 = 0.0d0
+    
+        ! write(*,*) max_id**3,  max_three_body,nm1
 
-    ! write(*,*) max_id, max_two_body, k2, k3
+    endif
 
-    k = k2 + k3 
+    allocate(dmat1(maxval(n1(:)),maxval(n1(:))))
+    allocate(dmat2(maxval(n2(:)),maxval(n2(:))))
+    
 
-    ! k = exp( - (k)**2 / (2.0d0 * 100000.0d0))
+    dmat1 = 0.0d0
+    dmat2 = 0.0d0
+
+    ! write (*,*) size(x1, dim=1), size(x1, dim=2),size(x1, dim=3)
+    ! write (*,*) size(x2, dim=1), size(x2, dim=2),size(x2, dim=3)
+    
+    ! write(*,*) 11
+    !$OMP PARALLEL DO PRIVATE(dmat1,acube1)
+    do a = 1, nm1
+        ! write(*,*) 11, a
+
+        dmat1(:,:) = distance_matrix(transpose(X1(a,2:4,:n1(a))))
+
+        call initialize_two_body(transpose(X1(a,2:4,:n1(a))), nuclear_charges1(:n1(a),a), dmat1(:n1(a),:n1(a)), &
+         & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), max_id, d_power)
+
+        s11(a) =  two_body_kernel( &
+            & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), &
+            & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), d_width)
+
+        if (three) then
+     
+            call initialize_three_body(transpose(X1(a,2:4,:n1(a))), nuclear_charges1(:n1(a),a), dmat1(:n1(a),:n1(a)), acube1, &
+                 & three_body_distance1(:,:,a), three_body_scaling1(:,:,a), three_body_counts1(:,a), max_id)
+     
+            s11(a) = s11(a) + t_weight * two_body_kernel( &
+                & three_body_distance1(:,:,a), three_body_scaling1(:,:,a), three_body_counts1(:,a), &
+                & three_body_distance1(:,:,a), three_body_scaling1(:,:,a), three_body_counts1(:,a), t_width)
+        endif 
+
+    enddo
+    !$OMP END PARALLEL DO
+
+    ! write(*,*) 22
+    !$OMP PARALLEL DO private(dmat2, acube2)
+    do a = 1, nm2
+        ! write(*,*) 22, a
+        dmat2(:,:) = distance_matrix(transpose(X2(a,2:4,:n2(a))))
+
+        call initialize_two_body(transpose(X2(a,2:4,:n2(a))), nuclear_charges2(:n2(a),a), dmat2(:n2(a),:n2(a)), &
+            & two_body_distance2(:,:,a), two_body_scaling2(:,:,a), two_body_counts2(:,a), max_id, d_power)
+        
+        s22(a) =  two_body_kernel( &
+            & two_body_distance2(:,:,a), two_body_scaling2(:,:,a), two_body_counts2(:,a), &
+            & two_body_distance2(:,:,a), two_body_scaling2(:,:,a), two_body_counts2(:,a), d_width)
+        
+        if (three) then
+            call  ang_cube(transpose(X2(a,2:4,:n2(a))), acube2)
+
+            call initialize_three_body(transpose(X2(a,2:4,:n2(a))), nuclear_charges2(:n2(a),a), dmat2(:n2(a),:n2(a)), acube2, &
+                & three_body_distance2(:,:,a), three_body_scaling2(:,:,a), three_body_counts2(:,a), max_id)
+
+            s22(a) = s22(a) + t_weight * two_body_kernel( &
+                & three_body_distance2(:,:,a), three_body_scaling2(:,:,a), three_body_counts2(:,a), &
+                & three_body_distance2(:,:,a), three_body_scaling2(:,:,a), three_body_counts2(:,a), t_width)
+        endif
 
 
-
-    ! acube1 = ang_cube(coordinates1) 
-    ! acube2 = ang_cube(coordinates2) 
-
-    ! write(*,*) dmat1
+    enddo
+    !$OMP END PARALLEL DO
 
 
+    ! write(*,*) 12
+    k = 0.0d0
+
+    !$OMP PARALLEL DO PRIVATE(s12,l2) schedule(dynamic)
+    do a = 1, nm1
+        do b = 1, nm2
+             
+    ! write(*,*) 12, a, b
+            s12 =  two_body_kernel( &
+         & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), &
+         & two_body_distance2(:,:,b), two_body_scaling2(:,:,b), two_body_counts2(:,b), d_width)
+        
+        if (three) then
+            s12 = s12 + t_weight * two_body_kernel( &
+                & three_body_distance1(:,:,a), three_body_scaling1(:,:,a), three_body_counts1(:,a), &
+                & three_body_distance2(:,:,b), three_body_scaling2(:,:,b), three_body_counts2(:,b), t_width)
+        endif
+
+            l2 = s11(a) + s22(b) - 2.0d0 * s12
+
+            k(a,b) = exp( - l2 / (2.0d0 * sigma**2))
+
+        enddo
+    enddo
+    !$OMP END PARALLEL DO
+
+    ! write(*,*) "END"
+    
+    deallocate(nuclear_charges1)
+    deallocate(nuclear_charges2)
+    deallocate(n1)
+    deallocate(n2)
+
+    deallocate(two_body_distance1)
+    deallocate(two_body_distance2)
+    deallocate(two_body_scaling1)
+    deallocate(two_body_scaling2)
+    deallocate(two_body_counts1)
+    deallocate(two_body_counts2)
+    
+    deallocate(dmat1)
+    deallocate(dmat2)
+
+    if (three) then
+        deallocate(three_body_distance1)
+        deallocate(three_body_distance2)
+        deallocate(three_body_scaling1)
+        deallocate(three_body_scaling2)
+        deallocate(three_body_counts1)
+        deallocate(three_body_counts2)
+        
+        deallocate(acube1)
+        deallocate(acube2)
+
+    endif
 end subroutine boss_kernel
+
+
 
