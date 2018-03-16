@@ -284,6 +284,114 @@ subroutine initialize_three_body(coords, charges, dmat, angcube, distance, scali
     ! stop
 end subroutine initialize_three_body
 
+
+subroutine print_occurences(nuclear_charges, occurences)
+
+    implicit none
+
+
+    integer, dimension(:,:), intent(in) :: nuclear_charges
+
+
+    integer, dimension(120), intent(out) :: occurences
+    integer, dimension(120) :: occurences_local
+
+    integer :: a, i
+
+    integer :: nm
+    integer :: na
+
+    integer :: q
+
+    occurences(:) = 0
+
+    na = size(nuclear_charges, dim=1)
+    nm = size(nuclear_charges, dim=2)
+
+    ! write (*,*) nm
+
+    do a = 1, nm
+
+        occurences_local = 0
+        do i = 1, na
+
+            q = nuclear_charges(i,a)
+
+            if (q < 1) then
+                exit
+            endif
+
+            occurences_local(q) = occurences_local(q) + 1
+
+        enddo
+        do i = 1, size(occurences)
+            occurences(i) = max(occurences(i), occurences_local(i))
+        enddo
+
+    enddo
+
+    ! do i = 1, size(occurences) 
+
+    !     if (occurences(i) > 0) write (*,*) i, occurences(i)
+
+    ! enddo
+
+
+
+end subroutine print_occurences 
+
+
+subroutine translate_charges(nuclear_charges, occurences)
+    
+    implicit none
+
+    integer, dimension(:,:), intent(inout) :: nuclear_charges
+    integer, dimension(120), intent(in) :: occurences
+    
+    integer, dimension(120) :: map
+
+    integer :: max_id, i, a
+    
+    integer :: nm
+    integer :: na
+
+    integer :: q
+
+    na = size(nuclear_charges, dim=1)
+    nm = size(nuclear_charges, dim=2)
+   
+    map = 0 
+    max_id = 0
+    do i = 1, size(occurences) 
+        
+        if (occurences(i) > 0) then
+
+            max_id = max_id + 1
+            map(i) = max_id
+        endif
+    enddo
+
+    ! rite (*,*) map
+    
+    do a = 1, nm
+        do i = 1, na
+            q = nuclear_charges(i,a)
+
+            if (q < 1) then
+                exit
+            endif
+
+            nuclear_charges(i,a) = map(q)
+
+        enddo
+    enddo
+
+    
+
+end subroutine translate_charges 
+
+
+
 function three2key(a, b, c, max_id) result(key)
 
     implicit none
@@ -307,7 +415,7 @@ end module boss
 subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
 
     use boss, only: distance_matrix, ang_cube, initialize_two_body, two_body_kernel, &
-        & initialize_three_body
+        & initialize_three_body, print_occurences, translate_charges
 
     implicit none
 
@@ -342,10 +450,6 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
 
     double precision, parameter :: pi = 4.d0 * atan(1.d0)
 
-    ! double precision, parameter :: d_width = 0.1d0
-    ! double precision, parameter :: d_power = 6.0d0
-    ! double precision, parameter :: sigma = 100.0d0
-
     double precision, intent(in) :: d_width
     double precision, intent(in) :: d_power
     double precision, intent(in) :: sigma
@@ -353,13 +457,12 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     double precision, parameter :: t_width = 0.2d0
    
     logical, parameter :: three = .false.
-    ! logical, parameter :: three = .true.
 
     double precision, parameter :: t_weight = 0.0d0
 
-
     double precision, dimension(nm1) :: s11
     double precision, dimension(nm2) :: s22
+
     double precision :: s12
     double precision :: l2
 
@@ -368,6 +471,8 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     integer :: na1, na2
 
     integer :: a, b, i
+
+    double precision :: v, rho
     
     double precision, dimension(:,:,:), allocatable :: acube1 
     double precision, dimension(:,:,:), allocatable :: acube2
@@ -379,7 +484,12 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     double precision, allocatable, dimension(:,:,:) :: three_body_distance2
     double precision, allocatable, dimension(:,:,:) :: three_body_scaling2
     integer, allocatable, dimension(:,:) :: three_body_counts2
-    
+   
+    integer, dimension(120) :: max_occurences
+    integer, dimension(120) :: occurences1
+    integer, dimension(120) :: occurences2
+
+
     max_size = max(size(X1, dim=3),size(X2, dim=3))
     
     allocate(nuclear_charges1(max_size,nm1))
@@ -414,7 +524,30 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
         enddo
     enddo
     
-    max_two_body = max(maxval(n1), maxval(n2))**2
+    call print_occurences(nuclear_charges1, occurences1)
+    call print_occurences(nuclear_charges2, occurences2)
+   
+    max_occurences = 0 
+
+    do i = 1, size(max_occurences) 
+        max_occurences(i) = max(occurences1(i), occurences2(i))
+        
+    enddo
+
+
+
+    call translate_charges(nuclear_charges1, max_occurences)
+    call translate_charges(nuclear_charges2, max_occurences)
+
+    ! write (*,*) max_occurences
+    max_id = max(maxval(nuclear_charges1), maxval(nuclear_charges2))
+    ! write (*,*) max_id
+
+    ! stop
+    
+    max_two_body = max(maxval(n1), maxval(n2))
+
+    max_two_body = max_two_body * (max_two_body - 1)
 
     allocate(two_body_distance1(max_id**2, max_two_body,nm1))
     allocate(two_body_distance2(max_id**2, max_two_body,nm2))
@@ -447,14 +580,13 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
         three_body_scaling2 = 0.0d0
         three_body_counts1 = 0
         three_body_counts2 = 0
+
         allocate(acube1(maxval(n1(:)),maxval(n1(:)),maxval(n1(:))))
         allocate(acube2(maxval(n2(:)),maxval(n2(:)),maxval(n2(:))))
 
         acube1 = 0.0d0
         acube2 = 0.0d0
     
-        ! write(*,*) max_id**3,  max_three_body,nm1
-
     endif
 
     allocate(dmat1(maxval(n1(:)),maxval(n1(:))))
@@ -464,13 +596,8 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     dmat1 = 0.0d0
     dmat2 = 0.0d0
 
-    ! write (*,*) size(x1, dim=1), size(x1, dim=2),size(x1, dim=3)
-    ! write (*,*) size(x2, dim=1), size(x2, dim=2),size(x2, dim=3)
-    
-    ! write(*,*) 11
     !$OMP PARALLEL DO PRIVATE(dmat1,acube1)
     do a = 1, nm1
-        ! write(*,*) 11, a
 
         dmat1(:,:) = distance_matrix(transpose(X1(a,2:4,:n1(a))))
 
@@ -482,6 +609,7 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
             & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), d_width)
 
         if (three) then
+            call  ang_cube(transpose(X1(a,2:4,:n1(a))), acube1)
      
             call initialize_three_body(transpose(X1(a,2:4,:n1(a))), nuclear_charges1(:n1(a),a), dmat1(:n1(a),:n1(a)), acube1, &
                  & three_body_distance1(:,:,a), three_body_scaling1(:,:,a), three_body_counts1(:,a), max_id)
@@ -494,10 +622,8 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     enddo
     !$OMP END PARALLEL DO
 
-    ! write(*,*) 22
     !$OMP PARALLEL DO private(dmat2, acube2)
     do a = 1, nm2
-        ! write(*,*) 22, a
         dmat2(:,:) = distance_matrix(transpose(X2(a,2:4,:n2(a))))
 
         call initialize_two_body(transpose(X2(a,2:4,:n2(a))), nuclear_charges2(:n2(a),a), dmat2(:n2(a),:n2(a)), &
@@ -522,18 +648,15 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     enddo
     !$OMP END PARALLEL DO
 
-
-    ! write(*,*) 12
     k = 0.0d0
 
     !$OMP PARALLEL DO PRIVATE(s12,l2) schedule(dynamic)
     do a = 1, nm1
         do b = 1, nm2
              
-    ! write(*,*) 12, a, b
-            s12 =  two_body_kernel( &
-         & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), &
-         & two_body_distance2(:,:,b), two_body_scaling2(:,:,b), two_body_counts2(:,b), d_width)
+        s12 =  two_body_kernel( &
+            & two_body_distance1(:,:,a), two_body_scaling1(:,:,a), two_body_counts1(:,a), &
+            & two_body_distance2(:,:,b), two_body_scaling2(:,:,b), two_body_counts2(:,b), d_width)
         
         if (three) then
             s12 = s12 + t_weight * two_body_kernel( &
@@ -545,11 +668,28 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
 
             k(a,b) = exp( - l2 / (2.0d0 * sigma**2))
 
+            ! Cauchy (10% better than Gaussian)
+            ! k(a,b) = 1.0d0 / (1.0d0 + l2/(sigma**2))
+
+
+            ! Inverse Multiquadratic Kernel (10% better than Gaussian)
+            ! k(a,b) = 1.0d0 / sqrt(l2 + sigma)
+
+
+            ! v = 1/2 (sucks balls) 
+            ! k(a,b) = exp(-sqrt(l2) /sigma)
+
+            ! v = 3/2 (20% worse than Gaussian)
+            ! k(a,b) = (1.0d0 + (sqrt(3.0d0) * sqrt(l2) / sigma)) * exp(-sqrt(3.0d0) * sqrt(l2) /sigma)
+           
+            ! v = 5/2 (10% worse than Gaussian) 
+            ! k(a,b) = (1.0d0 + (sqrt(5.0d0) * sqrt(l2) / sigma) & 
+            !    & + (5.0d0 * l2 / (3.0d0 * sigma**2))) * exp(-sqrt(5.0d0) * sqrt(l2) /sigma)
+
+
         enddo
     enddo
     !$OMP END PARALLEL DO
-
-    ! write(*,*) "END"
     
     deallocate(nuclear_charges1)
     deallocate(nuclear_charges2)
@@ -567,6 +707,7 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
     deallocate(dmat2)
 
     if (three) then
+
         deallocate(three_body_distance1)
         deallocate(three_body_distance2)
         deallocate(three_body_scaling1)
@@ -578,6 +719,7 @@ subroutine boss_kernel(X1, X2, nm1, nm2, sigma, d_width, d_power, k)
         deallocate(acube2)
 
     endif
+
 end subroutine boss_kernel
 
 
